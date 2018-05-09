@@ -1,5 +1,6 @@
 #include <opencv2/opencv.hpp>
 #include <stdint.h>
+#include <math.h>
 
 using namespace cv;
 using namespace std;
@@ -13,6 +14,8 @@ const int N = 100;
 Mat modules[N];
 color palette[C];
 String codes[C] = { "00","01","10","11" };
+color paletteAverages[C][N];
+int numOfPaletteColors[C] = {0, 0, 0, 0};
 String messages[N];
 
 void split(Mat image)
@@ -40,26 +43,6 @@ color average(Mat module) {
 	average.b = meanVal.val[0];
 	average.g = meanVal.val[1];
 	average.r = meanVal.val[2];
-	/*
-	Mat channels[3];
-	split(module, channels);
-	int sumB = 0;
-	int sumG = 0;
-	int sumR = 0;
-	for (int r = 0; r < module.rows; r++)
-	{
-		for (int c = 0; c < module.cols; c++)
-		{
-			sumB += module.at<Vec3b>(r, c)[0];
-			sumG += module.at<Vec3b>(r, c)[1];
-			sumR += module.at<Vec3b>(r, c)[2];
-		}
-	}
-	color average;
-	average.b = sumB / N;
-	average.g = sumG / N;
-	average.r = sumR / N;
-	*/
 	return average;
 }
 
@@ -76,7 +59,7 @@ int indexOfMax(int array[], int size)
 {
 	int maxIndex = 0;
 	int max = array[0];
-	for (int i = 0; i <= size - 1; i++)
+	for (int i = 0; i < size; i++)
 	{
 		if (array[i] > max)
 		{
@@ -87,6 +70,21 @@ int indexOfMax(int array[], int size)
 	return maxIndex;
 }
 
+void averagePaletteColors(int paletteIndex) {
+	int sumB = 0;
+	int sumG = 0;
+	int sumR = 0;
+	for (int i = 0; i < numOfPaletteColors[paletteIndex]; i++)
+	{
+		sumB += paletteAverages[paletteIndex][i].b;
+		sumG += paletteAverages[paletteIndex][i].g;
+		sumR += paletteAverages[paletteIndex][i].r;
+	}
+	palette[paletteIndex].b = sumB / numOfPaletteColors[paletteIndex];
+	palette[paletteIndex].g = sumG / numOfPaletteColors[paletteIndex];
+	palette[paletteIndex].r = sumR / numOfPaletteColors[paletteIndex];
+}
+
 void decode(Mat image) {
 	split(image);
 	
@@ -94,10 +92,12 @@ void decode(Mat image) {
 	{
 		palette[i] = average(*(modules + i));
 		messages[i] = codes[i];
+		paletteAverages[i][numOfPaletteColors[i]] = palette[i];
+		numOfPaletteColors[i] += 1;
 		cout << messages[i] << endl;
 	}
 
-	int threshold = 1000;
+	int diff = 40;
 	for (int i = 4; i < 100; i++)
 	{
 		int nonZeroCounts[C];
@@ -105,12 +105,19 @@ void decode(Mat image) {
 		{
 			color col = palette[k];
 			Mat output;
-			inRange(modules[i], Scalar(col.b - 50, col.g - 50, col.r - 50), Scalar(col.b + 50, col.g + 50, col.r + 50), output);
+			inRange(modules[i], Scalar(col.b - diff, col.g - diff, col.r - diff), Scalar(col.b + diff, col.g + diff, col.r + diff), output);
 			nonZeroCounts[k] = countNonZero(output);
 		}
 		int index = indexOfMax(nonZeroCounts, C);
 		messages[i] = codes[index];
 		cout << messages[i] << endl;
+		imwrite(to_string(i+1) + ".png", modules[i]);
+
+		color currentAverage = average(modules[i]);
+		paletteAverages[index][numOfPaletteColors[index]] = currentAverage;
+		numOfPaletteColors[index] += 1;
+
+		averagePaletteColors(index);
 	}
 
 	printMessage();
@@ -121,15 +128,27 @@ bool checkCorrectness() {
 	String correctResult = "00011011101101001000010011010010010110010110011111100011001110000010010011011100010011100010000010100010110001011100010000011010001100110110011100001001101011001001110011010001101100000110100111000001";
 	int index = 0;
 	bool result = true;
+	int numOfFail = 0;
 	for (int i = 0; i < N; i++) 
 	{
 		if (messages[i][0] != correctResult[index] || messages[i][1] != correctResult[index+1])
 		{
 			result = false;
-			break;
+			numOfFail++;
+			if (messages[i][0] != correctResult[index])
+			{
+				cout << index << endl;
+			}
+			if (messages[i][1] != correctResult[index+1])
+			{
+				cout << index + 1 << endl;
+			}
+			//break;
 		}
 		index += 2;
 	}
+	numOfFail;
+	cout << "Fails: " << numOfFail << endl;
 	return result;
 }
 
