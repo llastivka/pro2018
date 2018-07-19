@@ -8,7 +8,7 @@ using namespace cv;
 using namespace std;
 
 Mat src;
-Mat linesImg;
+Mat srcGray;
 Point2f inputQuad[4];
 Point2f outputQuad[4];
 
@@ -32,8 +32,7 @@ vector<Vec2f> calculateHoughLines(Mat src)
 	return result;
 }
 
-Mat drawLines(vector<Vec2f> lines) {
-	Mat linesImg = Mat::zeros(src.rows, src.cols, CV_LOAD_IMAGE_GRAYSCALE);
+void drawLines(Mat img, vector<Vec2f> lines) {
 	for (size_t i = 0; i < lines.size(); i++)
 	{
 		float rho = lines[i][0], theta = lines[i][1];
@@ -44,191 +43,161 @@ Mat drawLines(vector<Vec2f> lines) {
 		pt1.y = cvRound(y0 + 1000 * (a));
 		pt2.x = cvRound(x0 - 1000 * (-b));
 		pt2.y = cvRound(y0 - 1000 * (a));
-		line(linesImg, pt1, pt2, Scalar(255, 255, 255), 1, CV_AA);
+		line(img, pt1, pt2, Scalar(0, 0, 0), 3, CV_AA);
 	}
-	return linesImg;
 }
 
-//TODO will have to think about it more bacause if the image size is smaller it probably will affect this function.
-//Probably will have to make max rhoDiff and max thetaDiff dependent on the size of initial picture
-vector<Vec2f> unifyCloseLines(vector<Vec2f> lines)
+Mat threasholdImage(Mat img)
 {
-	vector<Vec2f> modified = {};
-	for (int i = 0; i < lines.size(); i++)
+	medianBlur(img, img, 5);
+
+	double thres = 240;
+	double color = 255;
+	threshold(img, img, thres, color, CV_THRESH_BINARY);
+
+	// Execute erosion to improve the detection
+	int erosion_size = 4;
+	Mat element = getStructuringElement(MORPH_CROSS,
+		Size(2 * erosion_size + 1, 2 * erosion_size + 1),
+		Point(erosion_size, erosion_size));
+	erode(img, img, element);
+	return img;
+}
+
+void findAngles(Mat img)
+{
+	vector<Vec2i> angles = {};
+
+	vector<vector<Point>> contours; // Vector for storing contour
+	vector<Vec4i> hierarchy;
+	findContours(srcGray, contours, hierarchy, CV_RETR_CCOMP, CV_CHAIN_APPROX_SIMPLE); // Find the contours in the image
+
+	vector<double> largestArea = { 0, 0, 0, 0 };
+	vector<int> largestContourIndexes = { 0, 0, 0, 0 };
+	for (int i = 0; i < contours.size(); i++) // iterate through each contour. 
 	{
-		if (!(lines[i][0] == 0 && lines[i][1] == 0))
+		double a = contourArea(contours[i], false);  //  Find the area of contour
+		for (int j = 0; j < 4; j++)
 		{
-			vector<int> closeList = {};
-			closeList.push_back(i);
-			float rho1 = lines[i][0], theta1 = lines[i][1];
-			for (int j = i + 1; j < lines.size(); j++)
-			{
-				if (!(lines[j][0] == 0 && lines[j][1] == 0))
+			if (a > largestArea[j]) {
+				largestArea.insert(largestArea.begin() + j, a);
+				//for inserting with shift of other elements, refactor later
+				for (int k = largestContourIndexes.size() - 1; k > j; k--)
 				{
-					float rho2 = lines[j][0], theta2 = lines[j][1];
-					float rhoDiff = abs(rho1 - rho2);
-					float thetaDiff = abs(theta1 - theta2);
-					if (rhoDiff < 20 && thetaDiff < 2 * CV_PI * 0.2) //rhoDiff and thetaDiff here
-					{
-						closeList.push_back(j);
-					}
+					largestContourIndexes[k] = largestContourIndexes[k - 1];
 				}
+				largestContourIndexes[j] = i; //Store the index of largest contour
+				break;
 			}
+		}
+	}
 
-			//for testing purposes (to see close lines visually)
-			//vector<Vec2f> expLines = {};
-			//for (int k = 0; k < closeList.size(); k++)
-			//{
-			//	expLines.push_back(lines[closeList.at(k)]);
-			//}
-			//Mat exp = drawLines(expLines);
-			//imshow("mid", exp);
-			//waitKey(0);
-
-			float rhoSum = 0;
-			float thetaSum = 0;
-			for (int j = 0; j < closeList.size(); j++)
+	//x and y for each of 5 points (upper-left, upper-right, lower-right, lower-left, centroid) for each of 4 largest conrours
+	vector<vector<Vec2i>> countoursImportantPointsCoordinates = {}; //final size should be 4
+	Point2f generalUpperLeft = Point2f(src.cols, src.rows);
+	Point2f generalUpperRight = Point2f(0, src.rows);
+	Point2f generalLowerRight = Point2f(0, 0);
+	Point2f generalLowerLeft = Point2f(src.cols, 0);
+	for (int i = 0; i < largestContourIndexes.size(); i++)
+	{
+		int maxX = 0;
+		int maxY = 0;
+		int minX = src.cols;
+		int minY = src.rows;
+		
+		for (int j = 0; j < contours[largestContourIndexes[i]].size(); j++)
+		{
+			int x = contours[largestContourIndexes[i]][j].x;
+			int y = contours[largestContourIndexes[i]][j].y;
+			if (x > maxX)
 			{
-				rhoSum += lines[closeList.at(j)][0];
-				thetaSum += lines[closeList.at(j)][1];
-				lines[j][0] = 0;
-				lines[j][1] = 0;
+				maxX = x;
+			} 
+			if (x < minX)
+			{
+				minX = x;
 			}
-			Vec2f* averageLine = new Vec2f(rhoSum / closeList.size(), thetaSum / closeList.size());
-			modified.push_back(*averageLine);
+			if (y > maxY)
+			{
+				maxY = y;
+			}
+			if (y < minY)
+			{
+				minY = y;
+			}
 		}
-	}
-	return modified;
-}
+		cout << i << "(" << largestContourIndexes[i] << "): minX = " << minX << ", maxX = " << maxX << ", minY = " << minY << ", maxY = " << maxY << endl;
+		Vec2i upperLeft = Vec2i(minX, minY);
+		Vec2i upperRight = Vec2i(maxX, minY);
+		Vec2i lowerRight = Vec2i(maxX, maxY);
+		Vec2i lowerLeft = Vec2i(minX, maxY);
+		Vec2i centroid = Vec2i((minX + maxX)/2, (minY + maxY)/2);
+		countoursImportantPointsCoordinates.push_back({ upperLeft, upperRight, lowerRight, lowerLeft, centroid });
 
-float calculateSumOfCloseness(vector<Vec2f> lines)
-{
-	float sum = 0;
-	for (int i = 0; i < lines.size(); i++) {
-		float theta = lines[i][1];
-		while (theta > 2 * CV_PI)
+		if (pow(upperLeft[0] - 0, 2) + pow(upperLeft[1] - 0, 2) < pow(generalUpperLeft.x - 0, 2) + pow(generalUpperLeft.y - 0, 2))
 		{
-			theta = theta - 2 * CV_PI;
+			generalUpperLeft.x = upperLeft[0];
+			generalUpperLeft.y = upperLeft[1];
 		}
-		while (theta < 0)
+		if (pow(upperRight[0] - src.cols - 1, 2) + pow(upperRight[1] - 0, 2) < pow(generalUpperRight.x - src.cols - 1, 2) + pow(generalUpperRight.y- 0, 2))
 		{
-			theta += 2 * CV_PI;
+			generalUpperRight.x = upperRight[0];
+			generalUpperRight.y = upperRight[1];
 		}
-		if (theta >= CV_PI / 4 && theta < 3 * CV_PI / 4)
+		if (pow(lowerRight[0] - src.cols - 1, 2) + pow(lowerRight[1] - src.rows - 1, 2) < pow(generalLowerRight.x - src.cols - 1, 2) + pow(generalLowerRight.y - src.rows - 1, 2))
 		{
-			sum += abs(theta - CV_PI / 2);
+			generalLowerRight.x = lowerRight[0];
+			generalLowerRight.y = lowerRight[1];
 		}
-		else if (theta >= 3 * CV_PI / 4 && theta < 5 * CV_PI / 4)
+		if (pow(lowerLeft[0] - 0, 2) + pow(lowerLeft[1] - src.rows - 1, 2) < pow(generalLowerLeft.x - 0, 2) + pow(generalLowerLeft.y - src.rows - 1, 2))
 		{
-			sum += abs(theta - CV_PI);
-		}
-		else if (theta >= 5 * CV_PI / 4 && theta < 7 * CV_PI / 4)
-		{
-			sum += abs(theta - 3 * CV_PI / 2);
-		}
-		else
-		{
-			sum += abs(theta);
-		}
-	}
-	return sum;
-}
-
-void transform(vector<Vec2f> lines)
-{
-	float initialPointsCoordinates[4][2] = { { 0, 0 },{ src.cols - 1, 0 },{ src.cols - 1, src.rows - 1 },{ 0, src.rows - 1 } };
-	inputQuad[0] = Point2f(initialPointsCoordinates[0][0], initialPointsCoordinates[0][1]);
-	inputQuad[1] = Point2f(initialPointsCoordinates[1][0], initialPointsCoordinates[1][1]);
-	inputQuad[2] = Point2f(initialPointsCoordinates[2][0], initialPointsCoordinates[2][1]);
-	inputQuad[3] = Point2f(initialPointsCoordinates[3][0], initialPointsCoordinates[3][1]);
-
-
-	Mat currentMinTransformed = linesImg;
-	vector<Vec2f> currentMinLines = lines;
-	float currentMinSumOfCloseness = calculateSumOfCloseness(lines);
-	int shift = 1;
-	int counterFor8DifferentTypesOfChange = 0;
-
-	while (counterFor8DifferentTypesOfChange >= 0 && counterFor8DifferentTypesOfChange < 12 && calculateSumOfCloseness(lines) > 0) {
-		outputQuad[0] = inputQuad[0];
-		outputQuad[1] = inputQuad[1];
-		outputQuad[2] = inputQuad[2];
-		outputQuad[3] = inputQuad[3];
-
-		switch (counterFor8DifferentTypesOfChange) {
-		case 0: outputQuad[0] = Point2f(inputQuad[0].x + shift, inputQuad[0].y);
-			break;
-		case 1: outputQuad[0] = Point2f(inputQuad[0].x, inputQuad[0].y + shift);
-			break;
-		case 2: outputQuad[1] = Point2f(inputQuad[1].x - shift, inputQuad[1].y);
-			break;
-		case 3: outputQuad[1] = Point2f(inputQuad[1].x, inputQuad[1].y + shift);
-			break;
-		case 4: outputQuad[2] = Point2f(inputQuad[2].x - shift, inputQuad[2].y);
-			break;
-		case 5: outputQuad[2] = Point2f(inputQuad[2].x, inputQuad[2].y - shift);
-			break;
-		case 6: outputQuad[3] = Point2f(inputQuad[3].x + shift, inputQuad[3].y);
-			break;
-		case 7: outputQuad[3] = Point2f(inputQuad[3].x, inputQuad[3].y - shift);
-			break;
-		case 8: outputQuad[0] = Point2f(inputQuad[0].x + shift, inputQuad[0].y);
-			outputQuad[1] = Point2f(inputQuad[1].x - shift, inputQuad[1].y);
-			break;
-		case 9: outputQuad[1] = Point2f(inputQuad[1].x, inputQuad[1].y + shift);
-			outputQuad[2] = Point2f(inputQuad[2].x, inputQuad[2].y - shift);
-			break;
-		case 10: outputQuad[2] = Point2f(inputQuad[2].x - shift, inputQuad[2].y);
-			outputQuad[3] = Point2f(inputQuad[3].x + shift, inputQuad[3].y);
-			break;
-		case 11: outputQuad[0] = Point2f(inputQuad[0].x, inputQuad[0].y + shift);
-			outputQuad[3] = Point2f(inputQuad[3].x, inputQuad[3].y - shift);
-			break;
-		default:
-			break;
+			generalLowerLeft.x = lowerLeft[0];
+			generalLowerLeft.y = lowerLeft[1];
 		}
 
-		cout << "Current MIN sum of angle closeness: " << currentMinSumOfCloseness << endl;
-		Mat transformed = perspectiveTransform(linesImg);
-		vector<Vec2f> newLines = calculateHoughLines(transformed);
-		float newSumOfCloseness = calculateSumOfCloseness(newLines);
-		cout << "New current sum of angle closeness: " << newSumOfCloseness << endl;
 		//for testing purposes
-		imshow("mid", transformed);
-		waitKey();
-
-		shift++;
-		if (newSumOfCloseness - currentMinSumOfCloseness < 0.5) {
-			if (newSumOfCloseness < currentMinSumOfCloseness) {
-				currentMinSumOfCloseness = newSumOfCloseness;
-				currentMinTransformed = transformed;
-			}
-			//for testing purposes
-			imwrite("transformed.png", transformed);
-		}
-		else
+		inputQuad[0] = Point2f(generalUpperLeft.x, generalUpperLeft.y);
+		inputQuad[1] = Point2f(generalUpperRight.x, generalUpperRight.y);
+		inputQuad[2] = Point2f(generalLowerRight.x, generalLowerRight.y);
+		inputQuad[3] = Point2f(generalUpperLeft.x, generalLowerLeft.y);
+		for (int i = 0; i < 4; i++)
 		{
-			counterFor8DifferentTypesOfChange++;
-			cout << "!!! New type of change: " << counterFor8DifferentTypesOfChange << endl;
-			shift = 1;
-			linesImg = currentMinTransformed;
+			circle(src, inputQuad[i], 3, Scalar(0, 0, 255), 1, 8, 0);
 		}
+		imshow("points", src);
+		cout << "Press any key" << endl;
+		waitKey(0);
 	}
+
+	//for now i'll just assign it but i'll have to rewrite it eventually
+	inputQuad[0] = Point2f(generalUpperLeft.x, generalUpperLeft.y);
+	inputQuad[1] = Point2f(generalUpperRight.x, generalUpperRight.y);
+	inputQuad[2] = Point2f(generalLowerRight.x, generalLowerRight.y);
+	inputQuad[3] = Point2f(generalUpperLeft.x, generalLowerLeft.y);
+
 }
 
 int main(int argc, char** argv)
 {
-	src = imread("real.png", 1);
-	imshow("source", src);
-	vector<Vec2f> lines = calculateHoughLines(src);
-	linesImg = drawLines(lines);
-	imwrite("lines.png", linesImg);
-	vector<Vec2f> lessLines = unifyCloseLines(lines);
-	Mat linesImg1 = drawLines(lessLines);
-	imwrite("lines1.png", linesImg1);
-	transform(lessLines);
+	src = imread("white.png", CV_LOAD_IMAGE_UNCHANGED);
+	srcGray = imread("white.png", CV_LOAD_IMAGE_GRAYSCALE);
+	//vector<Vec2f> lines = calculateHoughLines(srcGray);
+	//drawLines(srcGray, lines);
+	//imshow("with lines", srcGray);
+	//imwrite("lines.png", srcGray);
+	
+	srcGray = threasholdImage(srcGray);
+	imshow("white regions", srcGray);
+	findAngles(srcGray);
 
-	imshow("output", linesImg);
+	outputQuad[0] = Point2f(0, 0);
+	outputQuad[1] = Point2f(src.cols - 1, 0);
+	outputQuad[2] = Point2f(src.cols - 1, src.rows - 1);
+	outputQuad[3] = Point2f(0, src.rows - 1);
 
+	Mat output = perspectiveTransform(src);
+
+	imshow("output", output);
+	imwrite("output.png", output);
 	waitKey();
 }
